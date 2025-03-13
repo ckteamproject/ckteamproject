@@ -1,0 +1,144 @@
+#include <DHT.h>  // Including DHT library
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+
+// Define DHT11 sensor type and pin
+#define DHTPIN 5  // D1 = GPIO5
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// WiFi credentials
+const char *ssid = "Abi";  // Replace with your WiFi SSID
+const char *pass = "abinaya54321";  // Replace with your WiFi password
+
+// ThingSpeak API Key
+String apiKey = "IAPW5XCRWMDLZTWQ";  // Enter your Write API key from ThingSpeak
+const char *server = "api.thingspeak.com";
+
+// Google Sheets Script ID
+String GAS_ID = "AKfycbwQKKWmt4boyJmuBkBgJdY9AAoBgdoelrcUlRcYx5fHcSQ1o31IxLl6yXFrurk9v_7J"; // Google Apps Script ID
+
+// Define pin for onboard LED
+#define ON_Board_LED 2  // Built-in LED on NodeMCU
+
+// Initialize WiFiClientSecure for Google Sheets
+WiFiClientSecure client;
+
+void setup() {
+  // Start Serial Monitor and DHT sensor
+  Serial.begin(115200);
+  delay(500);
+  dht.begin();
+  
+  // Set up onboard LED
+  pinMode(ON_Board_LED, OUTPUT);
+  digitalWrite(ON_Board_LED, HIGH);  // Turn off LED initially
+
+  // Connect to WiFi
+  WiFi.begin(ssid, pass);
+  Serial.print("Connecting");
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    digitalWrite(ON_Board_LED, LOW);  // Flash LED during connection
+    delay(250);
+    digitalWrite(ON_Board_LED, HIGH);
+    delay(250);
+  }
+  
+  digitalWrite(ON_Board_LED, HIGH);  // Turn off LED when connected
+  Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Set insecure connection for Google Sheets (as we are using HTTP)
+  client.setInsecure();
+}
+
+void loop() {
+  // Read data from DHT11 sensor
+  float t = dht.readTemperature();  // Temperature in Celsius
+  float h = dht.readHumidity();  // Humidity in percentage
+  
+  // Check for sensor read errors
+  if (isnan(h) || isnan(t)) {
+    Serial.println("Failed to read from DHT sensor!");
+    delay(500);
+    return;
+  }
+  
+  // Print temperature and humidity to Serial Monitor
+  String Temp = "Temperature: " + String(t) + " °C";
+  String Humi = "Humidity: " + String(h) + " %";
+  Serial.println(Temp);
+  Serial.println(Humi);
+  
+  // Send data to ThingSpeak
+  sendToThingSpeak(t, h);
+  
+  // Send data to Google Sheets
+  sendToGoogleSheets(t, h);
+  
+  // Wait before sending the next data (ThingSpeak API requires at least 15-second delay)
+  delay(15000);
+}
+
+// Function to send data to ThingSpeak
+void sendToThingSpeak(float t, float h) {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    if (client.connect(server, 80)) {
+      String postStr = apiKey;
+      postStr += "&field1=" + String(t);
+      postStr += "&field2=" + String(h);
+      postStr += "\r\n\r\n";
+
+      client.print("POST /update HTTP/1.1\n");
+      client.print("Host: api.thingspeak.com\n");
+      client.print("Connection: close\n");
+      client.print("X-THINGSPEAKAPIKEY: " + apiKey + "\n");
+      client.print("Content-Type: application/x-www-form-urlencoded\n");
+      client.print("Content-Length: ");
+      client.print(postStr.length());
+      client.print("\n\n");
+      client.print(postStr);
+
+      Serial.print("Sent to ThingSpeak - Temp: ");
+      Serial.print(t);
+      Serial.print("°C, Humidity: ");
+      Serial.println(h);
+    }
+    client.stop();
+  }
+}
+
+// Function to send data to Google Sheets
+void sendToGoogleSheets(float t, float h) {
+  if (client.connect("script.google.com", 443)) {
+    String url = "/macros/s/" + GAS_ID + "/exec?temperature=" + String(t) + "&humidity=" + String(h);
+    Serial.print("Sending data to Google Sheets: ");
+    Serial.println(url);
+
+    client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+                 "Host: script.google.com\r\n" +
+                 "User-Agent: ESP8266/Arduino\r\n" +
+                 "Connection: close\r\n\r\n");
+
+    while (client.connected()) {
+      String line = client.readStringUntil('\n');
+      if (line == "\r") {
+        Serial.println("Headers received");
+        break;
+      }
+    }
+    String line = client.readStringUntil('\n');
+    if (line.startsWith("{\"state\":\"success\"")) {
+      Serial.println("Data successfully sent to Google Sheets!");
+    } else {
+      Serial.println("Failed to send data to Google Sheets.");
+    }
+  } else {
+    Serial.println("Failed to connect to Google Sheets.");
+  }
+  client.stop();
+}
